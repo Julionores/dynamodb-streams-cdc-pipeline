@@ -1,0 +1,119 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Change Data Capture (CDC) sur DynamoDB : chaque écriture sur la table Orders est
+  capturée par DynamoDB Streams, traitée par une fonction Lambda, et publiée sous
+  forme de message dans une file SQS pour être consommée par d'autres systèmes.
+
+Resources:
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: OrderID
+          AttributeType: S
+      KeySchema:
+        - AttributeName: OrderID
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      StreamSpecification:
+        StreamViewType: NEW_AND_OLD_IMAGES
+
+  DynamoDBEventQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      MessageRetentionPeriod: 3600
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaSQSDynamoDBPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: "arn:aws:logs:*:*:*"
+              - Effect: Allow
+                Action:
+                  - dynamodb:DescribeStream
+                  - dynamodb:GetRecords
+                  - dynamodb:GetShardIterator
+                  - dynamodb:ListStreams
+                Resource: !GetAtt OrdersTable.StreamArn
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt DynamoDBEventQueue.Arn
+
+  DynamoDBStreamProcessor:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          import json
+          import os
+
+          import boto3
+
+          sqs_client = boto3.client("sqs")
+          SQS_QUEUE_URL = os.environ["SQS_QUEUE_URL"]
+
+
+          def lambda_handler(event, context):
+              for record in event["Records"]:
+                  event_name = record["eventName"]
+                  new_image = record.get("dynamodb", {}).get("NewImage", {})
+                  old_image = record.get("dynamodb", {}).get("OldImage", {})
+                  message = {
+                      "eventName": event_name,
+                      "newImage": new_image,
+                      "oldImage": old_image,
+                  }
+
+                  response = sqs_client.send_message(
+                      QueueUrl=SQS_QUEUE_URL,
+                      MessageBody=json.dumps(message),
+                  )
+                  print(f"Message envoye a SQS: {response['MessageId']}")
+
+              return {"statusCode": 200, "body": "Processed records"}
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref DynamoDBEventQueue
+      Timeout: 30
+
+  DynamoDBStreamToLambda:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      EventSourceArn: !GetAtt OrdersTable.StreamArn
+      FunctionName: !Ref DynamoDBStreamProcessor
+      StartingPosition: LATEST
+      MaximumRetryAttempts: 3
+      BisectBatchOnFunctionError: true
+
+Outputs:
+  OrdersTableName:
+    Description: Nom de la table DynamoDB
+    Value: !Ref OrdersTable
+  SQSQueueURL:
+    Description: URL de la file SQS
+    Value: !Ref DynamoDBEventQueue
+  LambdaFunctionName:
+    Description: Nom de la fonction Lambda
+    Value: !Ref DynamoDBStreamProcessor
