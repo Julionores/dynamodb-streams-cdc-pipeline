@@ -22,6 +22,8 @@ synchronisation d'un autre système, alimentation d'un entrepôt de données).
 > [`securebank-api`](https://github.com/Julionores/securebank-api),
 > [`postgresql-ha-repmgr`](https://github.com/Julionores/postgresql-ha-repmgr) et
 > [`iso27001-isms-toolkit`](https://github.com/Julionores/iso27001-isms-toolkit).
+> Côté Machine Learning, voir aussi [`gradientforge`](https://github.com/Julionores/gradientforge),
+> un moteur de régression et classification codé en NumPy pur.
 
 ## Architecture
 
